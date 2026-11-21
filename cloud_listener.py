@@ -14,10 +14,15 @@ SESSION_STRING = os.getenv("TELEGRAM_SESSION", "1BJWap1sBuzx2R5NYMlsZI6FqG88Tv1g
 
 ALTERVISTA_URL = os.getenv("ALTERVISTA_URL", "https://meteocerignola.altervista.org/PROGRAVITA/RICEVI.php")
 
+# FILTRI AMMESSI (solo a partita in corso)
+ALLOWED_FILTERS = ["ESPERIMENTO", "GOLVEL1TULTRA", "VIADIMEZZO"]
+
+# FILTRI ESCLUSI (quelli del 1' minuto)
+BLOCKED_FILTERS = ["Sblocco", "SblHT"]
+
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 async def start_telegram():
-    # Attesa di sicurezza per permettere al vecchio server di disconnettersi completamente
     print("[*] Attesa di sicurezza (15 secondi) per chiusura sessioni precedenti...", flush=True)
     await asyncio.sleep(15)
 
@@ -39,16 +44,31 @@ async def start_telegram():
             except Exception:
                 chat_name = "Chat"
 
-            print(f"[DEBUG] Ricevuto da [{chat_name}]: {text[:35].strip()}...", flush=True)
+            # 1. Scarta categoricamente se contiene i filtri del 1' minuto
+            for blocked in BLOCKED_FILTERS:
+                if blocked.lower() in text.lower():
+                    print(f"[x] Scartato da [{chat_name}]: filtro escluso ({blocked})", flush=True)
+                    return
 
-            if "Live Match Alert" in text or "Dangerous Attacks" in text or "Over:" in text:
-                print(f"[!] SEGNALE CALCIO RILEVATO da [{chat_name}]!", flush=True)
-                parsed = parse_football_signal(text)
-                try:
-                    res = requests.post(ALTERVISTA_URL, json=parsed, timeout=10)
-                    print(f"[+] Inviato ad Altervista: {res.status_code} - {res.text}", flush=True)
-                except Exception as e:
-                    print(f"[-] Errore invio ad Altervista: {e}", flush=True)
+            # 2. Controlla se è un messaggio di match alert valido
+            is_match = "Live Match Alert" in text or "Dangerous Attacks" in text or "Over:" in text
+            if not is_match:
+                return
+
+            # 3. Verifica che appartenga a uno dei filtri live ammessi
+            has_allowed_filter = any(f.lower() in text.lower() for f in ALLOWED_FILTERS)
+            if not has_allowed_filter:
+                print(f"[x] Scartato da [{chat_name}]: non è tra i 4 filtri live ammessi", flush=True)
+                return
+
+            # Se ha superato tutti i controlli, è un segnale live valido!
+            print(f"[!] SEGNALE LIVE VALIDO RILEVATO da [{chat_name}]!", flush=True)
+            parsed = parse_football_signal(text)
+            try:
+                res = requests.post(ALTERVISTA_URL, json=parsed, timeout=10)
+                print(f"[+] Inviato ad Altervista: {res.status_code} - {res.text}", flush=True)
+            except Exception as e:
+                print(f"[-] Errore invio ad Altervista: {e}", flush=True)
 
         await client.run_until_disconnected()
     except Exception as e:
@@ -70,40 +90,9 @@ def home():
     return {
         "status": "online",
         "altervista_url": ALTERVISTA_URL,
-        "telegram_connected": client.is_connected()
+        "allowed_filters": ALLOWED_FILTERS,
+        "blocked_filters": BLOCKED_FILTERS
     }
-
-@app.get("/test")
-def test_send():
-    sample_text = """⚽️ Live Match Alert – Filter: VIADIMEZZO2,0
-🇦🇪   United Arab Emirates :- U19 League
-Al Jazira U19 (4) 🆚 Ajman U19 (11)
-⏱ 18' | ⚽️ 0–0
-
-⚽ First Half Goals 0.5 (Live)
-Over: 1.4 | Under: 2.75
-
-💰 Odds (Bet365) - Home | Draw | Away
-Start :- 1.53 | 4.50 | 4.20
-Live :- 1.44 | 4.50 | 6.00
-
-🎯 Shots (On : Off)
-🏠 0 : 2 | 🛫 0 : 1
-
-🏁 Corners
-🏠 2 | 🛫 0
-
-⚡️ Dangerous Attacks
-🏠 11 | 🛫 4
-
-📊 Possession
-🏠 82 | 🛫 18"""
-    parsed = parse_football_signal(sample_text)
-    try:
-        res = requests.post(ALTERVISTA_URL, json=parsed, timeout=10)
-        return {"status": "ok", "altervista_code": res.status_code, "altervista_response": res.text}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
